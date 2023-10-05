@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.psvdb": "json",
+        "*.psv": "json",
+        "*.psevk": "json",
+        "*.psds": "json",
+        "*.ccjs": "javascript",
+        ".clang-format": "plaintext",
+        "*.ebu": "plaintext",
+        "*.ebf": "plaintext",
+        "*.ebc": "plaintext",
+        "defs.h": "c"
+    }
+}
