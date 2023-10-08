@@ -9,6 +9,7 @@
         "*.ebu": "plaintext",
         "*.ebf": "plaintext",
         "*.ebc": "plaintext",
-        "defs.h": "c"
+        "defs.h": "c",
+        "user.h": "c"
     }
 }
