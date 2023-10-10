@@ -98,7 +98,7 @@ main(int argc, char* argv[])
 {
     if (argc != 2)
     {
-        fprintf(1, "Usage: find <name>");
+        fprintf(1, "Usage: find <name>\n");
         exit(0);
     };
 

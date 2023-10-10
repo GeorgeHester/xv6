@@ -10,6 +10,9 @@
         "*.ebf": "plaintext",
         "*.ebc": "plaintext",
         "defs.h": "c",
-        "user.h": "c"
+        "user.h": "c",
+        "stat.h": "c",
+        "types.h": "c",
+        "fs.h": "c"
     }
 }
