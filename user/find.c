@@ -75,7 +75,7 @@ check_directory(char* directory, char* query)
                     case T_FILE:
                         // Check for match
                         if (strcmp(directory_entry.name, query) == 0)
-                            fprintf(1, "Match: %s\n", path);
+                            printf("%s\n", path);
 
                         break;
                     case T_DIR:
@@ -96,12 +96,18 @@ check_directory(char* directory, char* query)
 int
 main(int argc, char* argv[])
 {
-    if (argc != 2)
+    if (argc == 2)
     {
-        fprintf(1, "Usage: find <name>\n");
+        check_directory(".", argv[1]);
         exit(0);
     };
 
-    check_directory(".", argv[1]);
+    if (argc == 3)
+    {
+        check_directory(argv[1], argv[2]);
+        exit(0);
+    };
+
+    fprintf(1, "Usage: find [<directory>] <name>\n");
     exit(0);
 };
