@@ -10,7 +10,24 @@ main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        // Print out stdin pipe
+        char character;
+        int character_index = 0;
+        char output[128];
+
+        while (read(0, &character, 1))
+        {
+
+            if (character == '\n' || character_index >= 128)
+            {
+                printf("%s\n", output);
+                character_index = 0;
+                memset(output, 0, 128);
+                continue;
+            };
+
+            output[character_index] = character;
+            character_index++;
+        };
     };
 
     if (argc >= 2)

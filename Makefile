@@ -121,6 +121,7 @@ UPROGS=\
 	$U/_uptime\
 	$U/_year\
 	$U/_xargs\
+	$U/_my_shell\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
