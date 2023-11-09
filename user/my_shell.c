@@ -5,13 +5,19 @@
 #include "user/user.h"
 #include "kernel/fcntl.h"
 
+/**
+ * Define required constants
+ */
 #define NULL 0
 #define BUFFER_SIZE 128
 #define MAXIMUM_ARGUMENTS 16
 
 char whitespace[6] = " \t\r\n\v";
-char symbols[] = "<|>&;()";
 
+/**
+ * Function to handle fatal errors, prints a message to stderr and then exits
+ * the shell
+ */
 void
 error(char* message)
 {
@@ -19,15 +25,35 @@ error(char* message)
     exit(1);
 };
 
+/**
+ * Function to handle forking in a safe way so that it safely exits given a fork
+ * failure
+ */
 int
 safe_fork(void)
 {
-    int process_id;
-    process_id = fork();
+    // Get the process id
+    int process_id = fork();
 
+    // Check the fork was successful
     if (process_id == -1) error("Failed fork");
 
     return process_id;
+};
+
+/**
+ * Custom implementation of the string.h function strrchr to get the last
+ * pointer in a given string
+ */
+char*
+strrchr(char* s, char c)
+{
+    char* p_s_end = s + strlen(s);
+
+    for (; p_s_end >= s; p_s_end--)
+        if (*p_s_end == c) return (char*)p_s_end;
+
+    return 0;
 };
 
 enum CommandType
@@ -47,7 +73,6 @@ typedef struct ExecuteCommand
 {
     enum CommandType type;
     char* argv[MAXIMUM_ARGUMENTS];
-    char* end_argv[MAXIMUM_ARGUMENTS];
 } ExecuteCommand;
 
 typedef struct ListCommand
@@ -69,7 +94,6 @@ typedef struct RedirectionCommand
     enum CommandType type;
     struct Command* p_command;
     char* p_file_name;
-    char* p_file_name_end;
     int file_mode;
     int file_descriptor;
 } RedirectionCommand;
@@ -83,7 +107,7 @@ create_execute_command(void)
     ExecuteCommand* command;
 
     command = malloc(sizeof(*command));
-    memset(command, 0, sizeof(*command));
+    memset(command, NULL, sizeof(*command));
     command->type = execute_command;
     return command;
 };
@@ -126,57 +150,44 @@ create_pipe_command(Command* p_left_command, Command* p_right_command)
 RedirectionCommand*
 create_redirection_command(Command* p_command,
                            char* p_file_name,
-                           char* p_file_name_end,
                            int file_mode,
                            int file_descriptor)
 {
     RedirectionCommand* command;
 
     command = malloc(sizeof(*command));
-    memset(command, 0, sizeof(*command));
+    memset(command, NULL, sizeof(*command));
     command->type = redirection_command;
     command->p_command = p_command;
     command->p_file_name = p_file_name;
-    command->p_file_name_end = p_file_name_end;
     command->file_mode = file_mode;
     command->file_descriptor = file_descriptor;
     return command;
 };
 
+void
+run_command(Command*) __attribute__((noreturn));
+
 /**
- * Check for a given set of tokens in the next part of the buffer
+ * Function to execute commands and any subordinate commands
  */
-int
-find(char** p_buffer, char* p_buffer_end, char* tokens)
-{
-    // Get the value stored in the buffer pointer
-    char* buffer;
-    buffer = *p_buffer;
-
-    // Make sure we haven't reached the end of the buffer and we have a
-    // whitespace character left, if so increase the pointer to move to the next
-    // character or byte
-    while (buffer < p_buffer_end && strchr(whitespace, *buffer))
-        buffer++;
-
-    // Update the value of the buffer
-    *p_buffer = buffer;
-
-    // Check there is any data left in the buffer and that one of the tokens
-    // inputted exists in the remaining buffer
-    return *buffer && strchr(tokens, *buffer);
-};
-
 void
 run_command(Command* command)
 {
-    ExecuteCommand* command_execute;
+    int command_communication_pipe[2];
 
+    ExecuteCommand* command_execute;
+    ListCommand* command_list;
+    PipeCommand* command_pipe;
+    RedirectionCommand* command_redirection;
+
+    // Check the command is not empty
     if (command == NULL) exit(1);
 
     switch (command->type)
     {
         default:
+            // If command is an invalid type error out
             error("Failed run command");
             break;
         case execute_command:
@@ -186,15 +197,74 @@ run_command(Command* command)
             // Check the command is not empty
             if (command_execute->argv[0] == NULL) exit(1);
 
-            /*int argi = 0;
-            while (command_execute->argv[0] != NULL)
-            {
-                fprintf(1, "DEBUG %s\n", command_execute->argv[argi]);
-                argi++;
-            };*/
-
             exec(command_execute->argv[0], command_execute->argv);
             fprintf(2, "Failed to execute %s\n", command_execute->argv[0]);
+            break;
+        case list_command:
+            // Cast the command to the correct type
+            command_list = (ListCommand*)command;
+
+            // Execute the other parts of the command in order
+            if (safe_fork() == 0) run_command(command_list->p_left_command);
+            wait(0);
+
+            run_command(command_list->p_right_command);
+            break;
+        case pipe_command:
+            // Cast the command to the correct type
+            command_pipe = (PipeCommand*)command;
+
+            // Open a pipe and check it was successful
+            if (pipe(command_communication_pipe) < 0)
+                error("Failed to open pipe");
+
+            // Fork for the first part of the command
+            if (safe_fork() == 0)
+            {
+                close(1);
+                dup(command_communication_pipe[1]);
+                close(command_communication_pipe[0]);
+                close(command_communication_pipe[1]);
+                run_command(command_pipe->p_left_command);
+            };
+
+            // Fork for the second part of the command
+            if (safe_fork() == 0)
+            {
+                close(0);
+                dup(command_communication_pipe[0]);
+                close(command_communication_pipe[0]);
+                close(command_communication_pipe[1]);
+                run_command(command_pipe->p_right_command);
+            };
+
+            // Close the pipe and wait for the parts of the command to finish
+            // execution
+            close(command_communication_pipe[0]);
+            close(command_communication_pipe[1]);
+            wait(0);
+            wait(0);
+            break;
+        case redirection_command:
+            // Cast the command to the correct type
+            command_redirection = (RedirectionCommand*)command;
+
+            // Close the file descriptor so the file takes that file descriptors
+            // value
+            close(command_redirection->file_descriptor);
+
+            // Attempt to open the given file
+            if (open(command_redirection->p_file_name,
+                     command_redirection->file_mode) < 0)
+            {
+                fprintf(2,
+                        "Failed to open file %s\n",
+                        command_redirection->p_file_name);
+                exit(1);
+            };
+
+            // Execute the subordinate command
+            run_command(command_redirection->p_command);
             break;
     };
 
@@ -202,58 +272,212 @@ run_command(Command* command)
 };
 
 Command*
+parse_command(char* buffer);
+Command*
+parse_execute(char* buffer);
+Command*
+parse_list(char* buffer, char* p_split);
+Command*
+parse_pipe(char* buffer, char* p_split);
+Command*
+parse_redirection(char* buffer, char* p_split);
+char*
+parse_redirection_file_name(char* buffer);
+
+Command*
 parse_command(char* buffer)
 {
-    if (strchr(buffer, ";"))
+    if (strchr(buffer, ';') != NULL)
     {
-        ExecuteCommand* p_command;
-        p_command = create_execute_command();
-
-        return (Command*)p_command;
+        Command* p_command;
+        p_command = parse_list(buffer, strchr(buffer, ';'));
+        return p_command;
     };
 
-    if (strchr(buffer, "|"))
+    if (strchr(buffer, '|') != NULL)
     {
-        Command* p_left_command = parse_command(buffer);
-        Command* p_right_command = parse_command(buffer);
-
-        PipeCommand* p_command;
-        p_command = create_pipe_command(p_left_command, p_right_command);
-        p_command->type = pipe_command;
-
-        return (Command*)p_command;
+        Command* p_command;
+        p_command = parse_pipe(buffer, strchr(buffer, '|'));
+        return p_command;
     };
+
+    if (strrchr(buffer, '>') != NULL && strrchr(buffer, '<') == NULL)
+    {
+        Command* p_command;
+        p_command = parse_redirection(buffer, strrchr(buffer, '>'));
+        return p_command;
+    };
+
+    if (strrchr(buffer, '<') != NULL && strrchr(buffer, '>') == NULL)
+    {
+        Command* p_command;
+        p_command = parse_redirection(buffer, strrchr(buffer, '<'));
+        return p_command;
+    };
+
+    if (strrchr(buffer, '>') != NULL && strrchr(buffer, '<') != NULL)
+    {
+        char* p_redirection_right = strrchr(buffer, '>');
+        char* p_redirection_left = strrchr(buffer, '<');
+
+        if (p_redirection_right < p_redirection_left)
+        {
+            Command* p_command;
+            p_command = parse_redirection(buffer, strrchr(buffer, '<'));
+            return p_command;
+        }
+        else
+        {
+            Command* p_command;
+            p_command = parse_redirection(buffer, strrchr(buffer, '>'));
+            return p_command;
+        };
+    };
+
+    Command* p_command;
+    p_command = parse_execute(buffer);
+    return p_command;
 };
 
 Command*
-parse_list(char* buffer){
+parse_execute(char* buffer)
+{
+    // Remove the whitespace from the start of the command
+    while (strchr(whitespace, buffer[0]) != NULL)
+        buffer++;
 
-    /*
-    void
-    parse_line(char** p_buffer, char* p_buffer_end){
+    // Create a new execute command
+    ExecuteCommand* p_command = create_execute_command();
 
-    };
+    // Check if the buffer is empty and return an empty command if so
+    if (buffer[0] == NULL) return (Command*)p_command;
 
-    struct Command*
-    parse_execute(){
+    // Set the default argument parameters
+    int argi = 0;
+    p_command->argv[argi] = buffer;
 
-    };
-
-    void
-    parse_pipe(char** p_buffer, char* p_buffer_end)
+    // Loop through all the arguments in the command
+    while (argi < MAXIMUM_ARGUMENTS)
     {
-        struct Command* p_command;
+        // Check for end of the command reached
+        if (buffer[0] == NULL) break;
 
-        p_command = parse_execute();
-        if (find(p_buffer, p_buffer_end, "|"))
+        // Check if this is a split in the command
+        if (strchr(whitespace, buffer[0]) != NULL)
         {
+            // Set the end pointer to null for the argument and update to the
+            // next argument index
+            buffer[0] = NULL;
+            buffer++;
+            argi++;
 
-            // command =
+            // Remove whitespace between arguments
+            while (strchr(whitespace, buffer[0]) != NULL)
+                buffer++;
+
+            // Check for end of the command reached
+            if (buffer[0] == NULL) break;
+
+            // Set the start pointer for the next argument
+            p_command->argv[argi] = buffer;
+            continue;
         };
+
+        // Move through the buffer
+        buffer++;
     };
-    */
+
+    return (Command*)p_command;
 };
 
+Command*
+parse_list(char* buffer, char* p_split)
+{
+    // Set the token to null to terminate the command string
+    buffer[p_split - buffer] = NULL;
+
+    // Parse the left and right hand side of the token
+    Command* p_left_command = parse_command(buffer);
+    Command* p_right_command = parse_command(buffer + (p_split - buffer + 1));
+
+    // Create a list command assigning the left and right hand commands
+    ListCommand* p_command;
+    p_command = create_list_command(p_left_command, p_right_command);
+
+    return (Command*)p_command;
+};
+
+Command*
+parse_pipe(char* buffer, char* p_split)
+{
+    // Set the token to null to terminate the command string
+    buffer[p_split - buffer] = NULL;
+
+    // Parse the left and right hand side of the token
+    Command* p_left_command = parse_command(buffer);
+    Command* p_right_command = parse_command(buffer + (p_split - buffer + 1));
+
+    // Create a pipe command assigning the left and right hand commands
+    PipeCommand* p_command;
+    p_command = create_pipe_command(p_left_command, p_right_command);
+
+    return (Command*)p_command;
+};
+
+Command*
+parse_redirection(char* buffer, char* p_split)
+{
+    // Get the direction character then set the token to null to terminate the
+    // command string
+    char direction = buffer[p_split - buffer];
+    buffer[p_split - buffer] = NULL;
+
+    // Parse the command
+    RedirectionCommand* p_command;
+    Command* p_redirection_command = parse_command(buffer);
+
+    // Get the file name string
+    char* p_redirection_file_name = buffer + (p_split - buffer + 1);
+    p_redirection_file_name =
+      parse_redirection_file_name(p_redirection_file_name);
+
+    // Create the redirection left command
+    if (direction == '<')
+    {
+        p_command = create_redirection_command(
+          p_redirection_command, p_redirection_file_name, O_RDONLY, 0);
+        return (Command*)p_command;
+    };
+
+    // Create the redirection right command
+    p_command = create_redirection_command(
+      p_redirection_command, p_redirection_file_name, O_WRONLY | O_CREATE, 1);
+    return (Command*)p_command;
+};
+
+char*
+parse_redirection_file_name(char* buffer)
+{
+    // Remove the whitespace from the start of the file name
+    while (strchr(whitespace, *buffer) != NULL)
+        buffer++;
+
+    char* output = buffer;
+
+    while (strchr(whitespace, *buffer) == NULL && *buffer != NULL)
+    {
+        buffer++;
+    };
+
+    *buffer = NULL;
+    if (output[0] == NULL) error("Failed to parse filename for redirection");
+
+    return output;
+};
+
+/**
+ * Open the file descriptors for the standard inputs and outputs
+ */
 void
 open_console_file_descriptor(void)
 {
@@ -318,53 +542,34 @@ main(void)
 
     while (prompt_user(buffer) >= 0)
     {
+        // Process buffer so it can be parsed
         remove_prefixed_whitespace_buffer(buffer);
         terminate_buffer(buffer);
 
-        // Copy first part of the buffer to compare for cd command
+        // Copy the first part of the buffer to compare for the cd command
         char cd_test[4];
         memcpy(cd_test, &buffer, 3);
-        cd_test[3] = 0;
-
-        // fprintf(1, "DEBUG %d\n", strlen(buffer));
-
-        buffer[strlen(buffer) - 1] = NULL;
-
-        // write(1, buffer, BUFFER_SIZE);
-
-        if (strcmp(buffer, "out\n") == 0) exit(0);
+        cd_test[3] = NULL;
 
         // Compare the cd test string to test for a cd command
         if (strcmp(cd_test, "cd ") == 0)
         {
+            // Process the directory variable
+            char* directory = buffer + 3;
+            remove_prefixed_whitespace_buffer(directory);
 
-            // Set the endpoint of the buffer string
-            // buffer[strlen(buffer) - 1] = 0;
             // Execute the cd command
-            int cd_success = chdir(buffer + 3);
+            int cd_success = chdir(directory);
 
             // Check for change directory success
-            if (cd_success < 0) fprintf(2, "Failed cd %s\n", buffer + 3);
+            if (cd_success < 0) fprintf(2, "Failed cd %s\n", directory);
             continue;
         };
 
+        // Fork to execute the command
         if (safe_fork() == 0) run_command(parse_command(buffer));
         wait(0);
-        // write(1, buffer, BUFFER_SIZE);
     };
 
     exit(0);
 };
-
-/*typedef struct ListCommand
-{
-    enum CommandType type;
-    struct Command* left_command;
-    struct Command* right_command;
-} ListCommand;*/
-
-/*typedef struct BackgroundCommand
-{
-    enum CommandType type;
-    struct Command* command;
-} BackgroundCommand;*/

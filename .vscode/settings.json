@@ -15,6 +15,7 @@
         "types.h": "c",
         "fs.h": "c",
         "fcntl.h": "c",
-        "param.h": "c"
+        "param.h": "c",
+        "stdarg.h": "c"
     }
 }
